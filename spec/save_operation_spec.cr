@@ -2,6 +2,7 @@ require "./spec_helper"
 
 private class SaveUser < User::SaveOperation
   permit_columns :name, :nickname, :joined_at, :age
+  before_save prepare
 
   def prepare
     validate_required name, joined_at, age
@@ -16,6 +17,8 @@ private class SaveTask < Task::SaveOperation
 end
 
 private class ValidSaveOperationWithoutParams < Post::SaveOperation
+  before_save prepare
+
   def prepare
     title.value = "My Title"
   end
@@ -83,13 +86,13 @@ describe "Avram::SaveOperation" do
   end
 
   it "automatically runs validations for required attributes" do
-    form = SaveTask.new
+    SaveTask.create do |operation, _task|
+      operation.valid?
 
-    form.valid?
-
-    form.valid?.should be_false
-    form.title.errors.size.should eq 1
-    form.body.errors.size.should eq 0
+      operation.valid?.should be_false
+      operation.title.errors.size.should eq 1
+      operation.body.errors.size.should eq 0
+    end
   end
 
   it "treats nil changes as nil and not an empty string" do
@@ -102,38 +105,34 @@ describe "Avram::SaveOperation" do
 
   describe "#errors" do
     it "includes errors for all form attributes" do
-      form = SaveUser.new
-
-      form.valid?
-
-      form.errors.should eq({
-        :name      => ["is required"],
-        :age       => ["is required"],
-        :joined_at => ["is required"],
-      })
+      SaveUser.create do |operation, _user|
+        operation.errors.should eq({
+          :name      => ["is required"],
+          :age       => ["is required"],
+          :joined_at => ["is required"],
+        })
+      end
     end
   end
 
   describe "save_failed?" do
     it "is true if the object is invalid and performed an action" do
       params = Avram::Params.new(name: "")
-      form = SaveUser.new(params)
+      operation = SaveUser.new(params)
 
-      form.save
+      operation.save
 
-      form.save_failed?.should be_true
-      form.save_status.should eq(Avram::SaveOperation::SaveStatus::SaveFailed)
-      form.valid?.should be_false
+      operation.save_status.should eq(Avram::SaveOperation::SaveStatus::SaveFailed)
+      operation.save_failed?.should be_true
     end
 
     it "is false if the object is not marked as saved but no action was performed" do
       params = Avram::Params.new(name: "")
-      form = SaveUser.new(params)
+      operation = SaveUser.new(params)
 
-      form.save_failed?.should be_false
-      form.save_status.should eq(Avram::SaveOperation::SaveStatus::Unperformed)
-      form.saved?.should be_false
-      form.valid?.should be_false
+      operation.save_status.should eq(Avram::SaveOperation::SaveStatus::Unperformed)
+      operation.save_failed?.should be_false
+      operation.saved?.should be_false
     end
   end
 

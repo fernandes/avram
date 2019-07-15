@@ -153,14 +153,6 @@ abstract class Avram::SaveOperation(T)
         {% end %}
       )
     end
-
-    def after_prepare
-      validate_required *required_attributes
-
-      {% if primary_key_type.id == UUID.id %}
-        id.value ||= UUID.random()
-      {% end %}
-    end
   end
 
   private def ensure_paramable(params)
@@ -172,12 +164,9 @@ abstract class Avram::SaveOperation(T)
   end
 
   def valid? : Bool
-    prepare
-    after_prepare
+    before_save
     attributes.all? &.valid?
   end
-
-  abstract def after_prepare
 
   def saved?
     save_status == SaveStatus::Saved
@@ -261,40 +250,50 @@ abstract class Avram::SaveOperation(T)
     end
   end
 
+  macro finished
+    # After all before_save callbacks run, make sure non-nilable column attributes
+    # are there.
+    #
+    # This must run after the other before_* callbacks otherwise it might mark
+    # a field as missing and then later another callback sets the field.
+    #
+    # For example:
+    #
+    #   before_save { email.value = "default@example.com" }
+    #
+    # If we had already validate 'email' it would say 'email is missing' when
+    # in reality We set it in another callback.
+    before_save validate_non_nilable_column_attributes
+
+    def validate_non_nilable_column_attributes
+      validate_required *required_attributes
+    end
+  end
+
   def save : Bool
-    if perform_save
+    if valid? && changes.any?
+      transaction_committed = database.transaction do
+        insert_or_update
+        saved_record = record.not_nil!
+        after_save(saved_record)
+        true
+      end
+
+      if transaction_committed
+        saved_record = record.not_nil!
+        after_commit(saved_record)
+        self.save_status = SaveStatus::Saved
+        true
+      else
+        mark_as_failed
+        false
+      end
+    elsif valid? && changes.empty?
       self.save_status = SaveStatus::Saved
       true
     else
       mark_as_failed
       false
-    end
-  end
-
-  private def perform_save : Bool
-    if valid? && changes.any?
-      database.transaction do
-        is_update = persisted?
-        before_save
-        if is_update
-          before_update
-        else
-          before_create
-        end
-
-        insert_or_update
-        saved_record = record.not_nil!
-        after_save(saved_record)
-
-        if is_update
-          after_update(saved_record)
-        else
-          after_create(saved_record)
-        end
-        true
-      end
-    else
-      valid? && changes.empty?
     end
   end
 
@@ -326,22 +325,11 @@ abstract class Avram::SaveOperation(T)
     @record.try &.id
   end
 
-  # Default callbacks
-  def prepare; end
-
-  def after_prepare; end
-
   def before_save; end
 
   def after_save(_record : T); end
 
-  def before_create; end
-
-  def after_create(_record : T); end
-
-  def before_update; end
-
-  def after_update(_record : T); end
+  def after_commit(_record : T); end
 
   private def insert : T
     self.created_at.value ||= Time.utc if responds_to?(:created_at)
